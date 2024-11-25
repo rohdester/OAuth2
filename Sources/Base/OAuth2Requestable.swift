@@ -101,8 +101,18 @@ open class OAuth2Requestable {
 		}
 	}
 	
+	private let syncQueue = DispatchQueue(label: "OAuth2Requestable.syncQueue")
+	
 	/// The instance's OAuth2RequestPerformer, defaults to using OAuth2DataTaskRequestPerformer which uses `URLSession.dataTask()`.
-	open var requestPerformer: OAuth2RequestPerformer?
+	open var requestPerformer: OAuth2RequestPerformer? {
+			get {
+				return syncQueue.sync { _requestPerformer }
+			}
+			set {
+				syncQueue.sync { _requestPerformer = newValue }
+			}
+		}
+		private var _requestPerformer: OAuth2RequestPerformer?
 	
 	/**
 	Perform the supplied request and call the callback with the response JSON dict or an error. This method is intended for authorization
@@ -143,7 +153,15 @@ open class OAuth2Requestable {
 	}
 	
 	/// Currently running abortable session task.
-	private var abortableTask: URLSessionTask?
+	private var _abortableTask: URLSessionTask?
+	var abortableTask: URLSessionTask? {
+			get {
+				return syncQueue.sync { _abortableTask }
+			}
+			set {
+				syncQueue.sync { _abortableTask = newValue }
+			}
+		}
 	
 	/**
 	Can be called to immediately abort the currently running authorization request, if it was started by `perform(request:callback:)`.
