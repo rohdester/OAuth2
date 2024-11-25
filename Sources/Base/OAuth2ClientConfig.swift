@@ -13,6 +13,7 @@ import Foundation
 Client configuration object that holds on to client-server specific configurations such as client id, -secret and server URLs.
 */
 open class OAuth2ClientConfig {
+	private let syncQueue = DispatchQueue(label: "OAuth2ClientConfig.syncQueue")
 	
 	/// The client id.
 	public final var clientId: String?
@@ -47,8 +48,18 @@ open class OAuth2ClientConfig {
 	/// All redirect URLs passed to the initializer.
 	open var redirectURLs: [String]?
 	
-	/// The receiver's access token.
-	open var accessToken: String?
+	// Internal storage for accessToken
+	private var _accessToken: String?
+	
+	/// The receiver's access token with synchronized access.
+	open var accessToken: String? {
+		get {
+			return syncQueue.sync { _accessToken }
+		}
+		set {
+			syncQueue.sync { _accessToken = newValue }
+		}
+	}
 
 	/// The receiver's id token.  Used by Google + and AWS Cognito
 	open var idToken: String?
@@ -59,8 +70,18 @@ open class OAuth2ClientConfig {
 	/// If set to true (the default), uses a keychain-supplied access token even if no "expires_in" parameter was supplied.
 	open var accessTokenAssumeUnexpired = true
 	
+	
+	private var _refreshToken: String?
+	
 	/// The receiver's long-time refresh token.
-	open var refreshToken: String?
+	open var refreshToken: String? {
+		get {
+			return syncQueue.sync { _refreshToken }
+		}
+		set {
+			syncQueue.sync { _refreshToken = newValue }
+		}
+	}
 	
 	/// The URL to register a client against.
 	public final var registrationURL: URL?

@@ -59,7 +59,17 @@ open class OAuth2DataLoader: OAuth2Requestable {
 	/// Our FIFO queue.
 	private var enqueued: [OAuth2DataRequest]?
 	
-	private var isAuthorizing = false
+	private let syncQueue = DispatchQueue(label: "OAuth2DataLoader.syncQueue")
+	private var _isAuthorizing = false
+
+	private var isAuthorizing: Bool {
+		get {
+			return syncQueue.sync { _isAuthorizing }
+		}
+		set {
+			syncQueue.sync { _isAuthorizing = newValue }
+		}
+	}
 	
 	/**
 	Overriding this method: it intercepts `unauthorizedClient` errors, stops and enqueues all calls, starts the authorization and, upon
