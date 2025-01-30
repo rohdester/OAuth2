@@ -59,7 +59,7 @@ open class OAuth2DataLoader: OAuth2Requestable {
 	/// Our FIFO queue.
 	private var enqueued: [OAuth2DataRequest]?
 	
-	private let syncQueue = DispatchQueue(label: "OAuth2DataLoader.syncQueue")
+	private let syncQueue = DispatchQueue(label: "OAuth2DataLoader.syncQueue", attributes: .concurrent)
 	private var _isAuthorizing = false
 
 	private var isAuthorizing: Bool {
@@ -67,7 +67,9 @@ open class OAuth2DataLoader: OAuth2Requestable {
 			return syncQueue.sync { _isAuthorizing }
 		}
 		set {
-			syncQueue.sync { _isAuthorizing = newValue }
+			syncQueue.async(flags: .barrier) {
+				self._isAuthorizing = newValue
+			}
 		}
 	}
 	
@@ -196,11 +198,13 @@ open class OAuth2DataLoader: OAuth2Requestable {
 	- parameter request:  The OAuth2DataRequest to enqueue for later execution
 	*/
 	public func enqueue(request: OAuth2DataRequest) {
-		if nil == enqueued {
-			enqueued = [request]
-		}
-		else {
-			enqueued!.append(request)
+		syncQueue.async(flags: .barrier) {
+			if nil == self.enqueued {
+				self.enqueued = [request]
+			}
+			else {
+				self.enqueued!.append(request)
+			}
 		}
 	}
 	
@@ -209,12 +213,14 @@ open class OAuth2DataLoader: OAuth2Requestable {
 	
 	- parameter closure: The closure to apply to each enqueued request
 	*/
-	public func dequeueAndApply(closure: ((OAuth2DataRequest) -> Void)) {
-		guard let enq = enqueued else {
-			return
+	public func dequeueAndApply(closure: @escaping ((OAuth2DataRequest) -> Void)) {
+		syncQueue.async(flags: .barrier) {
+			guard let enq = self.enqueued else {
+				return
+			}
+			self.enqueued = nil
+			enq.forEach(closure)
 		}
-		enqueued = nil
-		enq.forEach(closure)
 	}
 	
 	/**
@@ -224,7 +230,7 @@ open class OAuth2DataLoader: OAuth2Requestable {
 		dequeueAndApply() { req in
 			var request = req.request
 			do {
-				try request.sign(with: oauth2)
+				try request.sign(with: self.oauth2)
 				self.perform(request: request, retry: false, callback: req.callback)
 			}
 			catch let error {
