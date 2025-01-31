@@ -47,6 +47,7 @@ open class OAuth2DataLoader: OAuth2Requestable {
 	*/
 	public init(oauth2: OAuth2, host: String? = nil) {
 		self.oauth2 = oauth2
+		self.isAuthorizing = false
 		super.init(logger: oauth2.logger)
 		if let host = host {
 			sessionDelegate = OAuth2DataLoaderSessionTaskDelegate(loader: self, host: host)
@@ -59,19 +60,9 @@ open class OAuth2DataLoader: OAuth2Requestable {
 	/// Our FIFO queue.
 	private var enqueued: [OAuth2DataRequest]?
 	
-	private let syncQueue = DispatchQueue(label: "OAuth2DataLoader.syncQueue", attributes: .concurrent)
-	private var _isAuthorizing = false
+	private let syncQueue = DispatchQueue(label: "OAuth2DataLoader.serialQueue")
 
-	private var isAuthorizing: Bool {
-		get {
-			return syncQueue.sync { _isAuthorizing }
-		}
-		set {
-			syncQueue.async(flags: .barrier) {
-				self._isAuthorizing = newValue
-			}
-		}
-	}
+	private var isAuthorizing: Bool
 	
 	/**
 	Overriding this method: it intercepts `unauthorizedClient` errors, stops and enqueues all calls, starts the authorization and, upon
@@ -119,44 +110,46 @@ open class OAuth2DataLoader: OAuth2Requestable {
 	- parameter callback: The callback to call when the request completes/fails
 	*/
 	open func perform(request: URLRequest, retry: Bool, callback: @escaping ((OAuth2Response) -> Void)) {
-		guard !isAuthorizing else {
-			enqueue(request: request, callback: callback)
-			return
-		}
-		
-		super.perform(request: request) { response in
-			do {
-				if self.alsoIntercept403, 403 == response.response.statusCode {
-					throw OAuth2Error.unauthorizedClient(nil)
-				}
-				let _ = try response.responseData()
-				callback(response)
+		syncQueue.async {
+			guard !self.isAuthorizing else {
+				self.enqueue(request: request, callback: callback)
+				return
 			}
 			
-			// not authorized; stop and enqueue all requests, start authorization once, then re-try all enqueued requests
-			catch OAuth2Error.unauthorizedClient {
-				if retry {
-					self.enqueue(request: request, callback: callback)
-					self.oauth2.clientConfig.accessToken = nil
-					self.attemptToAuthorize() { json, error in
-						
-						// dequeue all if we're authorized, throw all away if something went wrong
-						if nil != json {
-							self.retryAll()
-						}
-						else {
-							self.throwAllAway(with: error ?? OAuth2Error.requestCancelled)
-						}
+			super.perform(request: request) { response in
+				do {
+					if self.alsoIntercept403, 403 == response.response.statusCode {
+						throw OAuth2Error.unauthorizedClient(nil)
 					}
-				}
-				else {
+					let _ = try response.responseData()
 					callback(response)
 				}
-			}
-			
-			// some other error, pass along
-			catch {
-				callback(response)
+				
+				// not authorized; stop and enqueue all requests, start authorization once, then re-try all enqueued requests
+				catch OAuth2Error.unauthorizedClient {
+					if retry {
+						self.enqueue(request: request, callback: callback)
+						self.oauth2.clientConfig.accessToken = nil
+						self.attemptToAuthorize() { json, error in
+							
+							// dequeue all if we're authorized, throw all away if something went wrong
+							if nil != json {
+								self.retryAll()
+							}
+							else {
+								self.throwAllAway(with: error ?? OAuth2Error.requestCancelled)
+							}
+						}
+					}
+					else {
+						callback(response)
+					}
+				}
+				
+				// some other error, pass along
+				catch {
+					callback(response)
+				}
 			}
 		}
 	}
@@ -170,11 +163,13 @@ open class OAuth2DataLoader: OAuth2Requestable {
 	                      non-nil but may be an empty dict), fails (error will be non-nil) or is canceled (both params and error are nil)
 	*/
 	open func attemptToAuthorize(callback: @escaping ((OAuth2JSON?, OAuth2Error?) -> Void)) {
-		if !isAuthorizing {
-			isAuthorizing = true
-			oauth2.authorize() { authParams, error in
-				self.isAuthorizing = false
-				callback(authParams, error)
+		syncQueue.async {
+			if !self.isAuthorizing {
+				self.isAuthorizing = true
+				self.oauth2.authorize() { authParams, error in
+					self.isAuthorizing = false
+					callback(authParams, error)
+				}
 			}
 		}
 	}
@@ -198,7 +193,7 @@ open class OAuth2DataLoader: OAuth2Requestable {
 	- parameter request:  The OAuth2DataRequest to enqueue for later execution
 	*/
 	public func enqueue(request: OAuth2DataRequest) {
-		syncQueue.async(flags: .barrier) {
+		syncQueue.async {
 			if nil == self.enqueued {
 				self.enqueued = [request]
 			}
@@ -214,7 +209,7 @@ open class OAuth2DataLoader: OAuth2Requestable {
 	- parameter closure: The closure to apply to each enqueued request
 	*/
 	public func dequeueAndApply(closure: @escaping ((OAuth2DataRequest) -> Void)) {
-		syncQueue.async(flags: .barrier) {
+		syncQueue.async {
 			guard let enq = self.enqueued else {
 				return
 			}
